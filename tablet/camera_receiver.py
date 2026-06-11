@@ -54,8 +54,8 @@ class CameraReceiver:
         delay = self.config.reconnect_delay
         while self._running:
             try:
-                with httpx.Client(timeout=httpx.Timeout(connect=10, read=None)) as client:
-                    with client.stream("GET", self.config.stream_url) as response:
+                with httpx.Client() as client:
+                    with client.stream("GET", self.config.stream_url, timeout=None) as response:
                         if response.status_code != 200:
                             logger.error(f"Stream returned HTTP {response.status_code}")
                             time.sleep(delay)
