@@ -16,29 +16,19 @@ MJPEG_HEADER = f"multipart/x-mixed-replace; boundary={BOUNDARY}"
 def create_router(camera, engine, manager, uploader):
     router = APIRouter()
 
-    # ------------------------------------------------------------------
-    # Live MJPEG
-    # ------------------------------------------------------------------
-
     @router.get("/video")
     async def video():
         async def generate():
             while True:
                 frame = camera.read_frame()
                 if frame is not None:
-                    import cv2
-                    _, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
                     yield (
                         b"--" + BOUNDARY.encode() + b"\r\n"
-                        b"Content-Type: image/jpeg\r\n\r\n" + encoded.tobytes() + b"\r\n"
+                        b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
                     )
                 await asyncio.sleep(0.033)
 
         return StreamingResponse(generate(), media_type=MJPEG_HEADER)
-
-    # ------------------------------------------------------------------
-    # Status
-    # ------------------------------------------------------------------
 
     @router.get("/status")
     async def status():
@@ -50,10 +40,6 @@ def create_router(camera, engine, manager, uploader):
             "buffer_duration": sum(s.duration for s in segments),
             "upload_queue": uploader.queue_size,
         }
-
-    # ------------------------------------------------------------------
-    # Replay endpoints
-    # ------------------------------------------------------------------
 
     @router.post("/replay/{seconds}")
     async def create_replay(seconds: int):
@@ -72,10 +58,6 @@ def create_router(camera, engine, manager, uploader):
         mime, _ = mimetypes.guess_type(path)
         return FileResponse(path, media_type=mime or "video/mp4")
 
-    # ------------------------------------------------------------------
-    # Save and upload
-    # ------------------------------------------------------------------
-
     @router.post("/save/{seconds}")
     async def save_replay(seconds: int):
         if seconds not in (10, 20, 30):
@@ -89,10 +71,6 @@ def create_router(camera, engine, manager, uploader):
             "filename": os.path.basename(path),
             "upload_queued": True,
         }
-
-    # ------------------------------------------------------------------
-    # Dashboard
-    # ------------------------------------------------------------------
 
     @router.get("/", response_class=HTMLResponse)
     async def dashboard():

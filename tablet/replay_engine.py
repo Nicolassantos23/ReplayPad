@@ -1,13 +1,12 @@
 import os
+import subprocess
 import time
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import cv2
-import numpy as np
-
+from shared.config import settings
 from shared.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -31,34 +30,23 @@ class ReplayEngine:
         output_dir: str = "segments",
         segment_duration: float = 5.0,
         max_segments: int = 6,
-        fps: float = 30.0,
     ):
         self._output_dir = Path(output_dir)
         self._seg_duration = segment_duration
         self._max_segments = max_segments
-        self._fps = fps
 
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
         self._running = False
         self._lock = threading.Lock()
         self._segments: list[Segment] = []
-
-        self._current_writer: Optional[cv2.VideoWriter] = None
-        self._current_path: Optional[str] = None
-        self._current_start: float = 0.0
-        self._frame_count: int = 0
-        self._frame_w: int = 0
-        self._frame_h: int = 0
-
+        self._frames: list[tuple[float, bytes]] = []
         self._segment_index = 0
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+        self._last_flush = 0.0
 
     def start(self):
         self._running = True
+        self._last_flush = time.time()
         logger.info(
             f"ReplayEngine started: {self._seg_duration}s segments, "
             f"max {self._max_segments} ({self._max_segments * self._seg_duration}s buffer)"
@@ -66,30 +54,24 @@ class ReplayEngine:
 
     def stop(self):
         self._running = False
-        self._close_current()
+        self._flush_segment(time.time())
         logger.info("ReplayEngine stopped")
 
-    def feed(self, frame: np.ndarray, timestamp: float):
+    def feed(self, frame: bytes, timestamp: float):
         if not self._running:
             return
 
-        if self._current_writer is None:
-            self._open_new_segment(frame, timestamp)
+        self._frames.append((timestamp, frame))
 
-        elapsed = timestamp - self._current_start
-        if elapsed >= self._seg_duration:
-            self._finalize_segment()
-            self._open_new_segment(frame, timestamp)
-
-        self._current_writer.write(frame)
-        self._frame_count += 1
+        elapsed = timestamp - self._last_flush
+        if elapsed >= self._seg_duration and len(self._frames) > 5:
+            self._flush_segment(timestamp)
 
     def get_segments(self) -> list[Segment]:
         with self._lock:
             return list(self._segments)
 
     def clear(self):
-        self._close_current()
         with self._lock:
             for seg in self._segments:
                 try:
@@ -98,72 +80,76 @@ class ReplayEngine:
                     pass
             self._segments.clear()
         self._segment_index = 0
+        self._frames.clear()
 
-    # ------------------------------------------------------------------
-    # Segment management
-    # ------------------------------------------------------------------
+    def _flush_segment(self, current_time: float):
+        if not self._frames:
+            return
 
-    def _open_new_segment(self, frame: np.ndarray, timestamp: float):
-        self._frame_h, self._frame_w = frame.shape[:2]
+        window = [f for f in self._frames if f[0] >= self._last_flush]
+        if len(window) < 5:
+            return
+
         self._segment_index += 1
-        self._current_start = timestamp
-        self._frame_count = 0
-
         filename = f"seg_{self._segment_index:04d}.mp4"
-        self._current_path = str(self._output_dir / filename)
+        output_path = str(self._output_dir / filename)
 
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        self._current_writer = cv2.VideoWriter(
-            self._current_path, fourcc, self._fps, (self._frame_w, self._frame_h)
-        )
-        if not self._current_writer.isOpened():
-            logger.error(f"Failed to create video writer: {self._current_path}")
-            self._current_writer = None
-            return
+        fps = max(1, len(window) / (current_time - self._last_flush)) if (current_time - self._last_flush) > 0 else 30
 
-        logger.debug(f"New segment: {filename} @ {self._frame_w}x{self._frame_h}")
+        cmd = [
+            settings.ffmpeg_path,
+            "-f", "image2pipe",
+            "-vcodec", "mjpeg",
+            "-r", str(round(fps)),
+            "-i", "pipe:0",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            "-y",
+            output_path,
+        ]
 
-    def _finalize_segment(self):
-        if self._current_writer is None:
-            return
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
 
-        self._current_writer.release()
-        self._current_writer = None
+            for _, jpeg_bytes in window:
+                proc.stdin.write(jpeg_bytes)
+            proc.stdin.close()
+            proc.wait(timeout=30)
 
-        actual_duration = (
-            self._frame_count / self._fps if self._frame_count > 0 else self._seg_duration
-        )
+            if proc.returncode != 0:
+                logger.error(f"ffmpeg segment creation failed for {filename}")
+                return
 
-        segment = Segment(
-            path=self._current_path,
-            start_time=self._current_start,
-            end_time=self._current_start + actual_duration,
-            duration=actual_duration,
-        )
+            duration = current_time - self._last_flush
+            segment = Segment(
+                path=output_path,
+                start_time=self._last_flush,
+                end_time=current_time,
+                duration=duration,
+            )
 
-        with self._lock:
-            self._segments.append(segment)
-            while len(self._segments) > self._max_segments:
-                oldest = self._segments.pop(0)
-                try:
-                    os.remove(oldest.path)
-                    logger.debug(f"Removed old segment: {oldest.filename}")
-                except OSError as e:
-                    logger.warning(f"Failed to remove {oldest.filename}: {e}")
-
-        self._current_path = None
-        self._current_start = 0.0
-        self._frame_count = 0
-
-    def _close_current(self):
-        if self._current_writer is not None:
-            self._current_writer.release()
-            self._current_writer = None
-            if self._current_path and os.path.exists(self._current_path):
-                if self._frame_count > 5:
-                    self._finalize_segment()
-                else:
+            with self._lock:
+                self._segments.append(segment)
+                while len(self._segments) > self._max_segments:
+                    oldest = self._segments.pop(0)
                     try:
-                        os.remove(self._current_path)
-                    except OSError:
-                        pass
+                        os.remove(oldest.path)
+                        logger.debug(f"Removed old segment: {oldest.filename}")
+                    except OSError as e:
+                        logger.warning(f"Failed to remove {oldest.filename}: {e}")
+
+            self._frames = [f for f in self._frames if f[0] >= current_time - self._seg_duration]
+            self._last_flush = current_time
+
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            logger.error(f"ffmpeg timed out for {filename}")
+        except Exception as e:
+            logger.error(f"Segment creation error: {e}")

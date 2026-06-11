@@ -31,12 +31,20 @@ async def upload_replay(
     if filepath is None:
         raise HTTPException(500, "Failed to save file")
 
-    import cv2
-    cap = cv2.VideoCapture(filepath)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap.release()
-    duration = frame_count / fps if fps > 0 else 0.0
+    import json
+    import subprocess
+
+    result = subprocess.run(
+        ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", filepath],
+        capture_output=True, text=True, timeout=15,
+    )
+    duration = 0.0
+    if result.returncode == 0:
+        info = json.loads(result.stdout)
+        for stream in info.get("streams", []):
+            if stream.get("codec_type") == "video":
+                duration = float(stream.get("duration", 0) or 0)
+                break
 
     replay = ReplayModel(
         duration=round(duration, 2),

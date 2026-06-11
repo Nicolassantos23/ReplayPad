@@ -10,7 +10,6 @@ class Settings:
     buffer_duration: int = int(os.getenv("BUFFER_DURATION", "30"))
     segment_duration: int = int(os.getenv("SEGMENT_DURATION", "5"))
     max_segments: int = int(os.getenv("MAX_SEGMENTS", "6"))
-    jpeg_quality: int = int(os.getenv("JPEG_QUALITY", "50"))
     tablet_host: str = os.getenv("TABLET_HOST", "0.0.0.0")
     tablet_port: int = int(os.getenv("TABLET_PORT", "8000"))
 

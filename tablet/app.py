@@ -2,6 +2,7 @@
 import os
 import sys
 import threading
+import time as _time
 
 import uvicorn
 from dotenv import load_dotenv
@@ -38,7 +39,6 @@ def create_app():
     feeding = True
 
     def feed_loop():
-        import time as _time
         while feeding:
             frame = camera.read_frame()
             if frame is not None:
