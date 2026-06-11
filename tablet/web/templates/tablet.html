@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>ReplayPad — Tablet</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0a;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:16px}
+h1{font-size:1.2rem;font-weight:300;letter-spacing:4px;text-transform:uppercase;color:#00e676;margin-bottom:8px}
+.status{font-size:.8rem;color:#888;margin-bottom:12px;text-align:center}
+.status .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
+.dot.green{background:#00e676}
+.dot.red{background:#ff1744}
+.video-wrap{width:100%;max-width:960px;background:#000;border-radius:12px;overflow:hidden;box-shadow:0 0 40px rgba(0,230,118,.08)}
+.video-wrap img{width:100%;display:block}
+.actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;width:100%;max-width:960px;margin-top:16px}
+.actions button{background:#1a1a2e;color:#e0e0e0;border:1px solid #333;padding:20px 8px;border-radius:12px;cursor:pointer;font-size:1.1rem;font-weight:600;transition:.15s;font-family:inherit}
+.actions button:active{transform:scale(.96)}
+.actions .replay{border-color:#ff9100;color:#ff9100}
+.actions .replay:hover{background:#ff9100;color:#000}
+.actions .save{border-color:#00e676;color:#00e676}
+.actions .save:hover{background:#00e676;color:#000}
+.secondary{display:flex;gap:10px;width:100%;max-width:960px;margin-top:10px}
+.secondary button{flex:1;background:#1a1a2e;color:#888;border:1px solid #333;padding:12px;border-radius:8px;cursor:pointer;font-size:.85rem;transition:.15s;font-family:inherit}
+.secondary button:hover{border-color:#00e676;color:#e0e0e0}
+.secondary button.danger{border-color:#ff1744;color:#ff1744}
+.secondary button.danger:hover{background:#ff1744;color:#000}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1a1a2e;border:1px solid #00e676;padding:12px 24px;border-radius:8px;font-size:.85rem;opacity:0;transition:opacity .3s;pointer-events:none}
+.toast.show{opacity:1}
+</style>
+</head>
+<body>
+
+<h1>ReplayPad</h1>
+<div class="status" id="status">📷 <span class="dot green"></span> conectado · <span id="buf-info">0s</span> de buffer</div>
+
+<div class="video-wrap">
+  <img id="stream" src="/video" alt="Live">
+</div>
+
+<div class="actions">
+  <button class="replay" onclick="replay(10)">⚽<br>10s</button>
+  <button class="replay" onclick="replay(20)">⚽<br>20s</button>
+  <button class="replay" onclick="replay(30)">⚽<br>30s</button>
+  <button class="save" onclick="saveReplay(10)">💾<br>Salvar 10s</button>
+  <button class="save" onclick="saveReplay(20)">💾<br>Salvar 20s</button>
+  <button class="save" onclick="saveReplay(30)">💾<br>Salvar 30s</button>
+</div>
+
+<div class="secondary">
+  <button id="btn-play">▶ Reproduzir Replay</button>
+  <button class="danger" id="btn-upload">☁️ Enviar para VPS</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let currentReplay = null;
+
+function toast(msg, color='#00e676'){
+  const t=document.getElementById('toast');
+  t.textContent=msg;
+  t.style.borderColor=color;
+  t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),3000);
+}
+
+async function replay(sec){
+  const btn=event.target.closest('button');
+  btn.textContent='⏳';
+  try{
+    const r=await fetch(`/replay/${sec}`,{method:'POST'});
+    const d=await r.json();
+    currentReplay=d.path;
+    toast(`Replay ${sec}s pronto!`);
+  }catch(e){toast('Erro ao gerar replay','#ff1744')}
+  setTimeout(()=>{
+    btn.innerHTML=sec===10?'⚽<br>10s':sec===20?'⚽<br>20s':'⚽<br>30s';
+  },1000);
+}
+
+async function saveReplay(sec){
+  const btn=event.target.closest('button');
+  btn.textContent='⏳';
+  try{
+    const r=await fetch(`/save/${sec}`,{method:'POST'});
+    const d=await r.json();
+    toast(`Salvo! Upload enfileirado.`);
+  }catch(e){toast('Erro ao salvar','#ff1744')}
+  setTimeout(()=>{
+    btn.innerHTML=sec===10?'💾<br>Salvar 10s':sec===20?'💾<br>Salvar 20s':'💾<br>Salvar 30s';
+  },1000);
+}
+
+document.getElementById('btn-play').onclick=async function(){
+  if(!currentReplay){toast('Gere um replay primeiro','#ff9100');return}
+  this.textContent='⏳';
+  try{
+    const r=await fetch('/replay/latest');
+    if(!r.ok)throw Error();
+    const blob=await r.blob();
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download='replay.mp4';
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('Download do replay');
+  }catch(e){toast('Replay não disponível','#ff1744')}
+  this.textContent='▶ Reproduzir Replay';
+};
+
+document.getElementById('btn-upload').onclick=async function(){
+  this.textContent='⏳';
+  try{
+    const r=await fetch('/save/10',{method:'POST'});
+    const d=await r.json();
+    toast('Salvo e enviado para VPS!');
+  }catch(e){toast('Erro no envio','#ff1744')}
+  this.textContent='☁️ Enviar para VPS';
+};
+
+async function pollStatus(){
+  try{
+    const r=await fetch('/status');
+    const d=await r.json();
+    const dot=document.querySelector('.dot');
+    dot.className='dot '+(d.camera==='connected'?'green':'red');
+    document.getElementById('buf-info').textContent=d.buffer_duration.toFixed(0);
+  }catch(_){}
+}
+setInterval(pollStatus,2000);
+pollStatus();
+</script>
+</body>
+</html>
