@@ -10,7 +10,7 @@ echo "==> Instalando dependências do sistema..."
 pkg install -y python ffmpeg git openssl
 
 echo "==> Instalando OpenCV (pré-compilado para Termux)..."
-pkg install -y python-opencv
+pkg install -y opencv-python
 
 echo "==> Instalando pacotes Python..."
 pip install fastapi uvicorn httpx python-dotenv
