@@ -96,35 +96,30 @@ class ReplayEngine:
 
         fps = max(1, len(window) / (current_time - self._last_flush)) if (current_time - self._last_flush) > 0 else 30
 
-        cmd = [
-            settings.ffmpeg_path,
-            "-f", "mjpeg",
-            "-framerate", str(round(fps)),
-            "-i", "pipe:0",
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart",
-            "-y",
-            output_path,
-        ]
-
+        temp_dir = self._output_dir / f"tmp_{self._segment_index:04d}"
+        temp_dir.mkdir(parents=True, exist_ok=True)
         try:
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-            )
+            for i, (_, jpeg_bytes) in enumerate(window):
+                frame_path = temp_dir / f"frame_{i:06d}.jpg"
+                frame_path.write_bytes(jpeg_bytes)
 
-            for _, jpeg_bytes in window:
-                proc.stdin.write(jpeg_bytes)
-            proc.stdin.close()
-            proc.wait(timeout=30)
+            cmd = [
+                settings.ffmpeg_path,
+                "-pattern_type", "glob",
+                "-i", str(temp_dir / "*.jpg"),
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                "-r", str(round(fps)),
+                "-y",
+                output_path,
+            ]
 
-            if proc.returncode != 0:
-                stderr = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
-                logger.error(f"ffmpeg failed ({filename}): {stderr[:200]}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+            if result.returncode != 0:
+                logger.error(f"ffmpeg failed ({filename}): {result.stderr[:300]}")
                 return
 
             duration = current_time - self._last_flush
@@ -149,7 +144,9 @@ class ReplayEngine:
             self._last_flush = current_time
 
         except subprocess.TimeoutExpired:
-            proc.kill()
             logger.error(f"ffmpeg timed out for {filename}")
         except Exception as e:
             logger.error(f"Segment creation error: {e}")
+        finally:
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)

@@ -1,5 +1,3 @@
-import re
-import time
 import threading
 from dataclasses import dataclass
 from typing import Optional
@@ -23,8 +21,11 @@ class CameraReceiver:
         self.config = config
         self._running = False
         self._connected = False
+        self._stop_event = threading.Event()
         self._frame_lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
+        self._client: Optional[httpx.Client] = None
+        self._response = None
 
         self._front: Optional[bytes] = None
         self._back: Optional[bytes] = None
@@ -33,12 +34,18 @@ class CameraReceiver:
         if self._running:
             return
         self._running = True
+        self._stop_event.clear()
         self._thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
         logger.info("Camera receiver started")
 
     def stop(self):
         self._running = False
+        self._stop_event.set()
+        if self._response:
+            self._response.close()
+        if self._client:
+            self._client.close()
         self._connected = False
         logger.info("Camera receiver stopped")
 
@@ -52,55 +59,69 @@ class CameraReceiver:
 
     def _capture_loop(self):
         delay = self.config.reconnect_delay
-        while self._running:
+        while self._running and not self._stop_event.is_set():
             try:
-                with httpx.Client() as client:
-                    with client.stream("GET", self.config.stream_url, timeout=None) as response:
-                        if response.status_code != 200:
-                            logger.error(f"Stream returned HTTP {response.status_code}")
-                            time.sleep(delay)
-                            delay = min(delay * 2, self.config.max_reconnect_delay)
-                            continue
+                self._client = httpx.Client(timeout=httpx.Timeout(30.0))
+                with self._client.stream("GET", self.config.stream_url, timeout=None) as response:
+                    if response.status_code != 200:
+                        logger.error(f"Stream returned HTTP {response.status_code}")
+                        self._sleep_or_stop(delay)
+                        delay = min(delay * 2, self.config.max_reconnect_delay)
+                        continue
 
-                        delay = self.config.reconnect_delay
-                        self._connected = True
-                        logger.info("Connected to stream")
-
-                        self._parse_mjpeg(response)
+                    delay = self.config.reconnect_delay
+                    self._connected = True
+                    logger.info("Connected to stream")
+                    self._response = response
+                    self._parse_mjpeg(response)
 
             except httpx.ConnectError:
                 logger.error(f"Connection failed, retrying in {delay:.0f}s...")
             except httpx.ReadError:
-                logger.warning(f"Stream interrupted, retrying in {delay:.0f}s...")
+                logger.warning(f"Stream interrupted")
+            except httpx.RemoteProtocolError:
+                logger.warning("Stream protocol error")
             except Exception as e:
-                logger.error(f"Stream error: {e}")
+                if self._running:
+                    logger.error(f"Stream error: {e}")
 
             self._connected = False
-            time.sleep(delay)
-            delay = min(delay * 2, self.config.max_reconnect_delay)
+            self._response = None
+            self._client = None
+            if self._running and not self._stop_event.is_set():
+                self._sleep_or_stop(delay)
+                delay = min(delay * 2, self.config.max_reconnect_delay)
+
+    def _sleep_or_stop(self, seconds: float):
+        self._stop_event.wait(timeout=seconds)
 
     def _parse_mjpeg(self, response: httpx.Response):
         buffer = b""
         for chunk in response.iter_bytes():
-            if not self._running:
+            if not self._running or self._stop_event.is_set():
                 break
             buffer += chunk
 
             while True:
                 start = buffer.find(b"\xff\xd8")
-                end = buffer.find(b"\xff\xd9")
-                if start >= 0 and end > start:
-                    jpeg_bytes = buffer[start:end + 2]
-                    buffer = buffer[end + 2:]
-
-                    with self._frame_lock:
-                        self._back = jpeg_bytes
-                        self._front, self._back = self._back, self._front
-
-                    if not self._connected:
-                        self._connected = True
-                        logger.info("Receiving frames")
-                else:
-                    if len(buffer) > 1024 * 1024:
-                        buffer = buffer[-512:]
+                if start < 0:
+                    if len(buffer) > 2 * 1024 * 1024:
+                        buffer = buffer[-1024:]
                     break
+
+                end = buffer.find(b"\xff\xd9", start)
+                if end < 0:
+                    if len(buffer) > 2 * 1024 * 1024:
+                        buffer = buffer[-1024:]
+                    break
+
+                jpeg_bytes = buffer[start:end + 2]
+                buffer = buffer[end + 2:]
+
+                with self._frame_lock:
+                    self._back = jpeg_bytes
+                    self._front, self._back = self._back, self._front
+
+                if not self._connected:
+                    self._connected = True
+                    logger.info("Receiving frames")
