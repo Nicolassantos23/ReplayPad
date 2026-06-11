@@ -29,3 +29,9 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Buildozer cache
+.buildozer/
+
+# Buildozer log
+opencode_build*.log
