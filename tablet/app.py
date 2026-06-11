@@ -19,14 +19,7 @@ from tablet.web.routes import create_router
 logger = setup_logger("replaypad")
 
 
-def main():
-    load_dotenv()
-
-    if not settings.stream_url:
-        logger.error("STREAM_URL not set")
-        sys.exit(1)
-
-    # ── Engine ──────────────────────────────────────────────────────
+def create_app():
     engine = ReplayEngine(
         output_dir="segments",
         segment_duration=settings.segment_duration,
@@ -34,24 +27,18 @@ def main():
     )
     engine.start()
 
-    # ── Camera ──────────────────────────────────────────────────────
     cam_config = CameraConfig(stream_url=settings.stream_url)
     camera = CameraReceiver(cam_config)
     camera.start()
 
-    # ── Replay ──────────────────────────────────────────────────────
     manager = ReplayManager(engine)
-
-    # ── Upload ──────────────────────────────────────────────────────
     uploader = Uploader(server_url=os.getenv("VPS_URL", ""))
     uploader.start()
-
-    # ── Frame feeder (camera → engine) ──────────────────────────────
-    import time as _time
 
     feeding = True
 
     def feed_loop():
+        import time as _time
         while feeding:
             frame = camera.read_frame()
             if frame is not None:
@@ -61,10 +48,28 @@ def main():
     feed_thread = threading.Thread(target=feed_loop, daemon=True)
     feed_thread.start()
 
-    # ── API ─────────────────────────────────────────────────────────
     app = FastAPI(title="ReplayPad — Tablet", version="1.2.0")
     router = create_router(camera, engine, manager, uploader)
     app.include_router(router)
+
+    def cleanup():
+        nonlocal feeding
+        feeding = False
+        camera.stop()
+        engine.stop()
+        uploader.stop()
+
+    return app, camera, engine, uploader, cleanup
+
+
+def main():
+    load_dotenv()
+
+    if not settings.stream_url:
+        logger.error("STREAM_URL not set")
+        sys.exit(1)
+
+    app, _, _, _, cleanup = create_app()
 
     logger.info("─" * 45)
     logger.info(f"  ReplayPad v1.2 — Tablet")
@@ -81,10 +86,7 @@ def main():
             log_level="info",
         )
     finally:
-        feeding = False
-        camera.stop()
-        engine.stop()
-        uploader.stop()
+        cleanup()
         logger.info("ReplayPad stopped")
 
 
