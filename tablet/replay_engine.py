@@ -98,9 +98,8 @@ class ReplayEngine:
 
         cmd = [
             settings.ffmpeg_path,
-            "-f", "image2pipe",
-            "-vcodec", "mjpeg",
-            "-r", str(round(fps)),
+            "-f", "mjpeg",
+            "-framerate", str(round(fps)),
             "-i", "pipe:0",
             "-c:v", "libx264",
             "-preset", "ultrafast",
@@ -115,7 +114,7 @@ class ReplayEngine:
                 cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             )
 
             for _, jpeg_bytes in window:
@@ -124,7 +123,8 @@ class ReplayEngine:
             proc.wait(timeout=30)
 
             if proc.returncode != 0:
-                logger.error(f"ffmpeg segment creation failed for {filename}")
+                stderr = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
+                logger.error(f"ffmpeg failed ({filename}): {stderr[:200]}")
                 return
 
             duration = current_time - self._last_flush
